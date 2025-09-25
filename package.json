@@ -4,8 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "start": "pnpx @dotenvx/dotenvx run -- ts-node index.ts",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test:session": "pnpx @dotenvx/dotenvx run -- ts-node eip1271-session-test.ts",
+    "test:decryption": "pnpx @dotenvx/dotenvx run -- ts-node eip1271-decryption-test.ts"
   },
   "keywords": [],
   "author": "",
