@@ -1,0 +1,27 @@
+{
+  "name": "eip-1271-signing-test",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "pnpx @dotenvx/dotenvx run -- ts-node index.ts",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.11.0",
+  "dependencies": {
+    "@dotenvx/dotenvx": "^1.51.0",
+    "@lit-protocol/auth-helpers": "^7.3.1",
+    "@lit-protocol/constants": "^7.3.1",
+    "@lit-protocol/contracts-sdk": "^7.3.1",
+    "@lit-protocol/lit-node-client": "^7.3.1",
+    "ethers": "^5.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.2"
+  }
+}
