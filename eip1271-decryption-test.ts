@@ -1,6 +1,5 @@
 import { LIT_NETWORK, LIT_RPC } from "@lit-protocol/constants";
 import { LitNodeClient } from "@lit-protocol/lit-node-client";
-import { ILitNodeClient } from "@lit-protocol/types";
 import { ethers } from "ethers";
 import { encryptString, decryptToString } from "@lit-protocol/encryption";
 
@@ -30,7 +29,7 @@ async function attemptDecryption(
             authSig,
             chain: "yellowstone" as const,
         },
-        litNodeClient as unknown as ILitNodeClient
+        litNodeClient as unknown as LitNodeClient
     );
 }
 
@@ -79,7 +78,7 @@ async function testEIP1271Decryption() {
         console.log("🔐 Encrypting test data...");
         const encryptRes = await encryptString(
             { accessControlConditions, dataToEncrypt: TEST_DATA },
-            litNodeClient as unknown as ILitNodeClient
+            litNodeClient as unknown as LitNodeClient
         );
 
         if (!encryptRes.ciphertext || !encryptRes.dataToEncryptHash) {
