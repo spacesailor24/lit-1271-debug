@@ -1,10 +1,7 @@
 import { LIT_NETWORK, LIT_RPC, LIT_ABILITY } from "@lit-protocol/constants";
 import { LitNodeClient } from "@lit-protocol/lit-node-client";
-import { LitActionResource } from "@lit-protocol/auth-helpers";
+import { LitActionResource, createSiweMessage, LitResourceAbilityRequest } from "@lit-protocol/auth-helpers";
 import { ethers } from "ethers";
-
-import { verifyEIP1271Signature } from "./verify-eip-1271-signature";
-import { createEIP1271AuthSig } from "./create-eip-1271-auth-sig";
 
 const {
     EIP_1271_WHITELIST_CONTRACT_ADDRESS,
@@ -12,6 +9,35 @@ const {
 } = process.env;
 
 const NETWORK = LIT_NETWORK.DatilDev;
+
+async function createEIP1271AuthSig(
+    signer: ethers.Wallet,
+    contractAddress: string,
+    litNodeClient: LitNodeClient,
+    chainId: number,
+    uri?: string,
+    expiration?: string,
+    resourceAbilityRequests?: LitResourceAbilityRequest[],
+) {
+    const siweMessage = await createSiweMessage({
+        nonce: await litNodeClient.getLatestBlockhash(),
+        walletAddress: signer.address, // Use signer address like working tests
+        chainId,
+        uri,
+        expiration,
+        resources: resourceAbilityRequests,
+        litNodeClient,
+    });
+
+    const signature = await signer.signMessage(siweMessage);
+
+    return {
+        address: contractAddress, // Contract address in final auth sig
+        sig: signature,
+        derivedVia: "EIP1271" as const,
+        signedMessage: siweMessage,
+    };
+}
 
 async function testEIP1271SessionSignatures() {
     if (!EIP_1271_WHITELIST_CONTRACT_ADDRESS) {
@@ -27,6 +53,7 @@ async function testEIP1271SessionSignatures() {
     try {
         // Setup
         const provider = new ethers.providers.JsonRpcProvider(LIT_RPC.CHRONICLE_YELLOWSTONE);
+        const { chainId } = await provider.getNetwork();
         const whitelistedSigners: ethers.Wallet[] = [];
 
         if (EIP_1271_WHITELISTED_SIGNER_1_PRIVATE_KEY) {
@@ -37,26 +64,7 @@ async function testEIP1271SessionSignatures() {
             throw new Error("At least one whitelisted signer private key is required");
         }
 
-        // 1. Create EIP-1271 auth signature using working format from decryption test
-        console.log("🔐 Creating EIP-1271 auth signature...");
-        const signer = whitelistedSigners[0];
-        const eip1271AuthSig = await createEIP1271AuthSig(signer, EIP_1271_WHITELIST_CONTRACT_ADDRESS, litNodeClient);
-
-        // 2. Verify the signature works with the contract
-        const isValid = await verifyEIP1271Signature(
-            EIP_1271_WHITELIST_CONTRACT_ADDRESS,
-            eip1271AuthSig.signedMessage,
-            eip1271AuthSig.sig,
-            provider
-        );
-
-        console.log(`📋 Contract validation: ${isValid ? "✅ VALID" : "❌ INVALID"}`);
-
-        if (!isValid) {
-            throw new Error("EIP-1271 signature validation failed");
-        }
-
-        // 3. Create session signatures with EIP-1271 auth
+        // Create session signatures with EIP-1271 auth
         console.log("\n🔗 Creating session signatures with EIP-1271 auth...");
         const sessionSigs = await litNodeClient.getSessionSigs({
             chain: "ethereum",
@@ -67,26 +75,44 @@ async function testEIP1271SessionSignatures() {
                     ability: LIT_ABILITY.LitActionExecution,
                 },
             ],
-            authNeededCallback: async () => {
-                return eip1271AuthSig;
+            authNeededCallback: async ({
+                uri,
+                expiration,
+                resourceAbilityRequests,
+            }) => {
+                return await createEIP1271AuthSig(
+                    whitelistedSigners[0],
+                    EIP_1271_WHITELIST_CONTRACT_ADDRESS,
+                    litNodeClient,
+                    chainId,
+                    uri,
+                    expiration,
+                    resourceAbilityRequests
+                );
             },
         });
 
         console.log("✅ SUCCESS! Session signatures created with EIP-1271 auth");
         console.log(`📋 Session signatures count: ${Object.keys(sessionSigs).length}`);
 
-        // 4. Test Lit Action execution with session signatures
+        // Test Lit Action execution with session signatures
         console.log("\n⚡ Testing Lit Action execution...");
         const result = await litNodeClient.executeJs({
             sessionSigs,
             code: `(() => {
-                console.log('Hello from Lit Protocol!');
                 Lit.Actions.setResponse({
-                    response: JSON.stringify({ message: 'Hello from Lit Protocol with EIP-1271!' }),
+                    response: JSON.stringify({ authSigAddress: Lit.Auth.authSigAddress }),
                 });
             })()`,
             jsParams: {},
         });
+
+        const authSigAddress = JSON.parse(result.response as string).authSigAddress;
+        if (authSigAddress !== EIP_1271_WHITELIST_CONTRACT_ADDRESS) {
+            throw new Error(
+                `The recovered address ${authSigAddress} does not match the EIP-1271 contract address ${EIP_1271_WHITELIST_CONTRACT_ADDRESS}`
+            );
+        }
 
         console.log("✅ SUCCESS! Lit Action executed with EIP-1271 session signatures");
         console.log(`📋 Result: ${JSON.stringify(result.response, null, 2)}`);

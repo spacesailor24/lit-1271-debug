@@ -2,9 +2,7 @@ import { LIT_NETWORK, LIT_RPC } from "@lit-protocol/constants";
 import { LitNodeClient } from "@lit-protocol/lit-node-client";
 import { ethers } from "ethers";
 import { encryptString, decryptToString } from "@lit-protocol/encryption";
-
-import { verifyEIP1271Signature } from "./verify-eip-1271-signature";
-import { createEIP1271AuthSig } from "./create-eip-1271-auth-sig";
+import { createSiweMessage } from "@lit-protocol/auth-helpers";
 
 const {
     EIP_1271_WHITELIST_CONTRACT_ADDRESS,
@@ -14,6 +12,49 @@ const {
 
 const NETWORK = LIT_NETWORK.DatilDev;
 const TEST_DATA = 'Test data for EIP-1271 decryption';
+
+async function createEIP1271AuthSig(
+    signer: ethers.Wallet,
+    contractAddress: string,
+    litNodeClient: LitNodeClient
+) {
+    const siweMessage = await createSiweMessage({
+        nonce: await litNodeClient.getLatestBlockhash(),
+        walletAddress: signer.address, // Use signer address like working tests
+    });
+
+    const signature = await signer.signMessage(siweMessage);
+
+    return {
+        address: contractAddress, // Contract address in final auth sig
+        sig: signature,
+        derivedVia: "EIP1271" as const,
+        signedMessage: siweMessage,
+    };
+}
+
+async function verifyEIP1271Signature(
+    contractAddress: string,
+    message: string,
+    signature: string,
+    provider: ethers.providers.Provider
+): Promise<boolean> {
+    const contract = new ethers.Contract(
+        contractAddress,
+        ["function isValidSignature(bytes32 _hash, bytes calldata _signature) external view returns (bytes4)"],
+        provider
+    );
+
+    try {
+        // Use hashMessage to get the same hash that wallet.signMessage creates
+        // This includes the Ethereum message prefix
+        const messageHash = ethers.utils.hashMessage(message);
+        const result = await contract.isValidSignature(messageHash, signature);
+        return result === "0x1626ba7e"; // EIP-1271 magic value
+    } catch (error) {
+        return false;
+    }
+}
 
 async function attemptDecryption(
     accessControlConditions: any[],
