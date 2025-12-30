@@ -1,8 +1,10 @@
-import { LIT_NETWORK, LIT_RPC } from "@lit-protocol/constants";
-import { LitNodeClient } from "@lit-protocol/lit-node-client";
+import { createLitClient } from "@lit-protocol/lit-client";
+import { createAuthManager, storagePlugins } from "@lit-protocol/auth";
+import { nagaDev } from "@lit-protocol/networks";
+import { createAccBuilder } from "@lit-protocol/access-control-conditions";
 import { ethers } from "ethers";
-import { encryptString, decryptToString } from "@lit-protocol/encryption";
 import { createSiweMessage } from "@lit-protocol/auth-helpers";
+import { privateKeyToAccount } from "viem/accounts";
 
 const {
     EIP_1271_WHITELIST_CONTRACT_ADDRESS,
@@ -10,23 +12,30 @@ const {
     EIP_1271_WHITELISTED_SIGNER_2_PRIVATE_KEY,
 } = process.env;
 
-const NETWORK = LIT_NETWORK.DatilDev;
 const TEST_DATA = 'Test data for EIP-1271 decryption';
+
+// Helper to get nonce from the blockchain
+async function getLatestBlockhash(provider: ethers.providers.Provider): Promise<string> {
+    const latestBlock = await provider.getBlock('latest');
+    return latestBlock.hash;
+}
 
 async function createEIP1271AuthSig(
     signer: ethers.Wallet,
     contractAddress: string,
-    litNodeClient: LitNodeClient
+    provider: ethers.providers.Provider
 ) {
+    const nonce = await getLatestBlockhash(provider);
+
     const siweMessage = await createSiweMessage({
-        nonce: await litNodeClient.getLatestBlockhash(),
-        walletAddress: signer.address, // Use signer address like working tests
+        walletAddress: signer.address,
+        nonce: nonce,
     });
 
     const signature = await signer.signMessage(siweMessage);
 
     return {
-        address: contractAddress, // Contract address in final auth sig
+        address: contractAddress,
         sig: signature,
         derivedVia: "EIP1271" as const,
         signedMessage: siweMessage,
@@ -57,21 +66,51 @@ async function verifyEIP1271Signature(
 }
 
 async function attemptDecryption(
-    accessControlConditions: any[],
-    encryptRes: any,
+    litClient: any,
+    authManager: any,
+    encryptedData: any,
     authSig: any,
-    litNodeClient: LitNodeClient
+    dummyAccount: any
 ) {
-    return await decryptToString(
-        {
-            accessControlConditions,
-            ciphertext: encryptRes.ciphertext,
-            dataToEncryptHash: encryptRes.dataToEncryptHash,
-            authSig,
-            chain: "yellowstone" as const,
+    const builder = createAccBuilder();
+    const accs = builder
+        .evmBasic({
+            contractAddress: "",
+            standardContractType: "",
+            chain: "yellowstone",
+            method: "",
+            parameters: [":userAddress"],
+            returnValueTest: {
+                comparator: "=",
+                value: EIP_1271_WHITELIST_CONTRACT_ADDRESS!
+            }
+        })
+        .build();
+
+    // Create a minimal EOA auth context for the dummy account
+    // We'll override this with the EIP-1271 authSig
+    const dummyAuthContext = await authManager.createEoaAuthContext({
+        config: {
+            account: dummyAccount,
         },
-        litNodeClient as unknown as LitNodeClient
-    );
+        authConfig: {
+            resources: [['access-control-condition-decryption', '*']],
+            expiration: new Date(Date.now() + 1000 * 60 * 15).toISOString(),
+        },
+        litClient: litClient,
+    });
+
+    const decryptedResponse = await litClient.decrypt({
+        ciphertext: encryptedData.ciphertext,
+        dataToEncryptHash: encryptedData.dataToEncryptHash,
+        unifiedAccessControlConditions: accs,
+        chain: "yellowstone",
+        authContext: dummyAuthContext,
+        // Pass the EIP-1271 authSig - this should override the authContext's authSig
+        authSig: authSig,
+    });
+
+    return decryptedResponse.convertedData || decryptedResponse.decryptedData;
 }
 
 async function testEIP1271Decryption() {
@@ -79,15 +118,21 @@ async function testEIP1271Decryption() {
         throw new Error("EIP_1271_WHITELIST_CONTRACT_ADDRESS environment variable is required");
     }
 
-    const litNodeClient = new LitNodeClient({
-        litNetwork: NETWORK,
-        debug: true,
+    // Create the Lit client
+    const litClient = await createLitClient({ network: nagaDev });
+
+    // Create auth manager for storage
+    const authManager = createAuthManager({
+        storage: storagePlugins.localStorageNode({
+            appName: 'eip1271-decryption-test',
+            networkName: 'naga-dev',
+            storagePath: './.lit-auth-local',
+        }),
     });
-    await litNodeClient.connect();
 
     try {
         // Setup
-        const provider = new ethers.providers.JsonRpcProvider(LIT_RPC.CHRONICLE_YELLOWSTONE);
+        const provider = new ethers.providers.JsonRpcProvider("https://yellowstone-rpc.litprotocol.com");
         const whitelistedSigners: ethers.Wallet[] = [];
 
         if (EIP_1271_WHITELISTED_SIGNER_1_PRIVATE_KEY) {
@@ -101,36 +146,44 @@ async function testEIP1271Decryption() {
             throw new Error("At least one whitelisted signer private key is required");
         }
 
-        const accessControlConditions = [
-            {
+        // Create a dummy Viem account for the auth context
+        // This is needed because v8 requires an authContext, but we'll override with EIP-1271 authSig
+        const dummyAccount = privateKeyToAccount('0x1234567890123456789012345678901234567890123456789012345678901234');
+        console.log(`Dummy account: ${dummyAccount.address}`);
+
+        // 1. Encrypt test data
+        console.log("Encrypting test data...");
+
+        const builder = createAccBuilder();
+        const accs = builder
+            .evmBasic({
                 contractAddress: "",
-                standardContractType: "" as const,
-                chain: "yellowstone" as const,
+                standardContractType: "",
+                chain: "yellowstone",
                 method: "",
                 parameters: [":userAddress"],
                 returnValueTest: {
-                    comparator: "=" as const,
+                    comparator: "=",
                     value: EIP_1271_WHITELIST_CONTRACT_ADDRESS
                 }
-            }
-        ];
+            })
+            .build();
 
-        // 1. Encrypt test data
-        console.log("🔐 Encrypting test data...");
-        const encryptRes = await encryptString(
-            { accessControlConditions, dataToEncrypt: TEST_DATA },
-            litNodeClient as unknown as LitNodeClient
-        );
+        const encryptedData = await litClient.encrypt({
+            dataToEncrypt: TEST_DATA,
+            unifiedAccessControlConditions: accs,
+            chain: "yellowstone",
+        });
 
-        if (!encryptRes.ciphertext || !encryptRes.dataToEncryptHash) {
+        if (!encryptedData.ciphertext || !encryptedData.dataToEncryptHash) {
             throw new Error("Encryption failed");
         }
-        console.log("✅ Data encrypted successfully");
+        console.log("Data encrypted successfully");
 
-        // 2. Test with valid signer
-        console.log("\n🔓 Testing decryption with VALID signer...");
+        // 2. Test with valid signer 1
+        console.log("Testing decryption with VALID signer 1...");
         const validSigner = whitelistedSigners[0];
-        const validAuthSig = await createEIP1271AuthSig(validSigner, EIP_1271_WHITELIST_CONTRACT_ADDRESS, litNodeClient);
+        const validAuthSig = await createEIP1271AuthSig(validSigner, EIP_1271_WHITELIST_CONTRACT_ADDRESS, provider);
 
         // Verify signature with contract
         const isValidSignature = await verifyEIP1271Signature(
@@ -139,78 +192,78 @@ async function testEIP1271Decryption() {
             validAuthSig.sig,
             provider
         );
-        console.log(`📋 Contract validation: ${isValidSignature ? "✅ VALID" : "❌ INVALID"}`);
+        console.log(`Contract validation: ${isValidSignature ? "VALID" : "INVALID"}`);
 
         if (!isValidSignature) {
             throw new Error("EIP-1271 signature validation failed");
         }
 
         // Attempt decryption with valid signer
-        const decryptRes = await attemptDecryption(accessControlConditions, encryptRes, validAuthSig, litNodeClient);
+        const decryptRes = await attemptDecryption(litClient, authManager, encryptedData, validAuthSig, dummyAccount);
 
         if (decryptRes !== TEST_DATA) {
             throw new Error(`Expected: "${TEST_DATA}", got: "${decryptRes}"`);
         }
 
-        console.log("✅ SUCCESS! Valid signer decryption works");
-        console.log(`📋 Decrypted: "${decryptRes}"`);
+        console.log("SUCCESS! Valid signer 1 decryption works");
+        console.log(`Decrypted: "${decryptRes}"`);
 
-        // 2.1. Test with valid signer 2
-        console.log("\n🔓 Testing decryption with VALID signer...");
-        const validSigner2 = whitelistedSigners[1];
-        const validAuthSig2 = await createEIP1271AuthSig(validSigner2, EIP_1271_WHITELIST_CONTRACT_ADDRESS, litNodeClient);
+        // 2.1. Test with valid signer 2 (if available)
+        if (whitelistedSigners.length > 1) {
+            console.log("Testing decryption with VALID signer 2...");
+            const validSigner2 = whitelistedSigners[1];
+            const validAuthSig2 = await createEIP1271AuthSig(validSigner2, EIP_1271_WHITELIST_CONTRACT_ADDRESS, provider);
 
-        // Verify signature with contract
-        const isValidSignature2 = await verifyEIP1271Signature(
-            EIP_1271_WHITELIST_CONTRACT_ADDRESS,
-            validAuthSig2.signedMessage,
-            validAuthSig2.sig,
-            provider
-        );
-        console.log(`📋 Contract validation: ${isValidSignature ? "✅ VALID" : "❌ INVALID"}`);
+            // Verify signature with contract
+            const isValidSignature2 = await verifyEIP1271Signature(
+                EIP_1271_WHITELIST_CONTRACT_ADDRESS,
+                validAuthSig2.signedMessage,
+                validAuthSig2.sig,
+                provider
+            );
+            console.log(`Contract validation: ${isValidSignature2 ? "VALID" : "INVALID"}`);
 
-        if (!isValidSignature2) {
-            throw new Error("EIP-1271 signature validation failed");
+            if (!isValidSignature2) {
+                throw new Error("EIP-1271 signature validation failed for signer 2");
+            }
+
+            // Attempt decryption with valid signer 2
+            const decryptRes2 = await attemptDecryption(litClient, authManager, encryptedData, validAuthSig2, dummyAccount);
+
+            if (decryptRes2 !== TEST_DATA) {
+                throw new Error(`Expected: "${TEST_DATA}", got: "${decryptRes2}"`);
+            }
+
+            console.log("SUCCESS! Valid signer 2 decryption works");
+            console.log(`Decrypted: "${decryptRes2}"`);
         }
-
-        // Attempt decryption with valid signer
-        const decryptRes2 = await attemptDecryption(accessControlConditions, encryptRes, validAuthSig, litNodeClient);
-
-        if (decryptRes2 !== TEST_DATA) {
-            throw new Error(`Expected: "${TEST_DATA}", got: "${decryptRes2}"`);
-        }
-
-        console.log("✅ SUCCESS! Valid signer 2 decryption works");
-        console.log(`📋 Decrypted: "${decryptRes2}"`);
 
         // 3. Sanity check with invalid signer
-        console.log("\n🔍 SANITY CHECK: Testing with INVALID signer (should fail)...");
+        console.log("SANITY CHECK: Testing with INVALID signer (should fail)...");
         const invalidSigner = ethers.Wallet.createRandom().connect(provider);
-        console.log(`📋 Invalid signer: ${invalidSigner.address}`);
+        console.log(`Invalid signer: ${invalidSigner.address}`);
 
-        const invalidAuthSig = await createEIP1271AuthSig(invalidSigner, EIP_1271_WHITELIST_CONTRACT_ADDRESS, litNodeClient);
+        const invalidAuthSig = await createEIP1271AuthSig(invalidSigner, EIP_1271_WHITELIST_CONTRACT_ADDRESS, provider);
 
         try {
-            const invalidDecryptRes = await attemptDecryption(accessControlConditions, encryptRes, invalidAuthSig, litNodeClient);
-            throw new Error(`❌ SANITY CHECK FAILED: Invalid signer should not succeed! Got: "${invalidDecryptRes}"`);
+            const invalidDecryptRes = await attemptDecryption(litClient, authManager, encryptedData, invalidAuthSig, dummyAccount);
+            throw new Error(`SANITY CHECK FAILED: Invalid signer should not succeed! Got: "${invalidDecryptRes}"`);
         } catch (error: any) {
             if (error.message?.includes('SANITY CHECK FAILED')) {
                 throw error;
             }
 
             // Expected failure - invalid signer should be rejected
-            console.log("✅ SANITY CHECK PASSED: Invalid signer correctly rejected");
-            console.log(`📋 Error (expected): ${error.message ? error.message.substring(0, 150) : error}...`);
+            console.log("SANITY CHECK PASSED: Invalid signer correctly rejected");
+            console.log(`Error (expected): ${error.message ? error.message.substring(0, 150) : error}...`);
         }
 
-        console.log("\n🎉 ALL TESTS PASSED!");
-        console.log("📋 EIP-1271 contract validation is working correctly");
+        console.log("ALL TESTS PASSED!");
+        console.log("EIP-1271 contract validation is working correctly");
 
     } catch (error) {
-        console.error("❌ Test failed:", error);
+        console.error("Test failed:", error);
         throw error;
-    } finally {
-        await litNodeClient.disconnect();
     }
 }
 

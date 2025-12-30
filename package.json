@@ -1,11 +1,12 @@
 {
-  "name": "eip-1271-signing-test",
+  "name": "eip-1271-signing-test-naga",
   "version": "1.0.0",
   "description": "",
+  "type": "module",
   "main": "index.js",
   "scripts": {
-    "test:session": "pnpx @dotenvx/dotenvx run -- ts-node eip1271-session-test.ts",
-    "test:decryption": "pnpx @dotenvx/dotenvx run -- ts-node eip1271-decryption-test.ts"
+    "test:session": "pnpx @dotenvx/dotenvx run -- tsx eip1271-session-test.ts",
+    "test:decryption": "pnpx @dotenvx/dotenvx run -- tsx eip1271-decryption-test.ts"
   },
   "keywords": [],
   "author": "",
@@ -13,17 +14,19 @@
   "packageManager": "pnpm@10.11.0",
   "dependencies": {
     "@dotenvx/dotenvx": "^1.51.0",
-    "@lit-protocol/auth-helpers": "^7.3.1",
-    "@lit-protocol/constants": "^7.3.1",
-    "@lit-protocol/contracts-sdk": "^7.3.1",
-    "@lit-protocol/encryption": "^7.3.1",
-    "@lit-protocol/lit-node-client": "^7.3.1",
-    "ethers": "^5.8.0"
+    "@lit-protocol/access-control-conditions": "^8.0.2",
+    "@lit-protocol/auth": "^8.2.0",
+    "@lit-protocol/auth-helpers": "^8.2.0",
+    "@lit-protocol/constants": "^8.0.8",
+    "@lit-protocol/lit-client": "^8.3.0",
+    "@lit-protocol/networks": "^8.4.0",
+    "ethers": "5.7.2",
+    "viem": "2.38.3"
   },
   "devDependencies": {
-    "@lit-protocol/types": "^8.0.2",
     "@types/node": "^24.5.2",
     "ts-node": "^10.9.2",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.2"
   }
 }
